@@ -4,12 +4,14 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 import java.io.IOException;
+import java.io.File;
 
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.font.PDFont;
+import org.apache.pdfbox.pdmodel.font.PDType0Font;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 
 @SpringBootApplication
@@ -36,10 +38,13 @@ public class DemoApplication {
 	
 			content.beginText();
 	
-			PDFont font = PDType1Font.HELVETICA_BOLD;
+			// PDFont font = PDType1Font.HELVETICA_BOLD;
+			PDFont font = PDType0Font.load(doc, new File("ipamjm.ttf"));
 			content.setFont(font, 12);
 			content.newLineAtOffset(100, 700);
 			content.showText("Hello World");
+			content.showText("あいう");
+			// content.showText("齋齋󠄃齋󠄄齋󠄆齋󠄅");
 	
 			content.endText();
 	
