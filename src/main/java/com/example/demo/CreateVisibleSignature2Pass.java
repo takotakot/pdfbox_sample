@@ -274,6 +274,7 @@ public class CreateVisibleSignature2Pass extends CreateSignatureBase
                     try{
                         cmsSignature = createCMSSignatureFromHashAndKeystore(hash, this.keystore, this.pin);
                         System.err.println("length: " + cmsSignature.length);
+                        // TODO: check overflow
                         raf.write(Hex.getBytes(cmsSignature));
                     }catch(Exception e){
                         System.err.println("exception: " + e.getMessage());

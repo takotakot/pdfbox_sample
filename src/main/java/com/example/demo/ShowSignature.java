@@ -83,6 +83,8 @@ import org.bouncycastle.util.CollectionStore;
 import org.bouncycastle.util.Selector;
 import org.bouncycastle.util.Store;
 
+// import org.apache.commons.codec.binary.Hex;
+
 /**
  * This will get the signature(s) from the document, do some verifications and
  * show the signature(s) and the certificates. This is a complex topic - the
