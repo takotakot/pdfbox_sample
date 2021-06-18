@@ -33,8 +33,14 @@ import java.security.NoSuchAlgorithmException;
 import java.security.UnrecoverableKeyException;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
+import java.security.cert.Certificate;
+import java.security.cert.CertificateFactory;
+import java.security.PrivateKey;
+
+import java.util.Arrays;
 import java.util.Calendar;
 import java.util.List;
+import java.util.Enumeration;
 
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.cos.COSName;
@@ -61,10 +67,30 @@ import org.apache.pdfbox.pdmodel.interactive.form.PDField;
 import org.apache.pdfbox.pdmodel.interactive.form.PDSignatureField;
 import org.apache.pdfbox.util.Hex;
 import org.apache.pdfbox.util.Matrix;
+
+import org.bouncycastle.asn1.ASN1EncodableVector;
+import org.bouncycastle.asn1.cms.Attribute;
+import org.bouncycastle.asn1.cms.AttributeTable;
+import org.bouncycastle.asn1.cms.CMSAttributes;
+import org.bouncycastle.asn1.DEROctetString;
+import org.bouncycastle.asn1.DERSet;
+import org.bouncycastle.asn1.x509.AlgorithmIdentifier;
 import org.bouncycastle.asn1.x500.RDN;
 import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.asn1.x500.style.BCStyle;
 import org.bouncycastle.asn1.x500.style.IETFUtils;
+import org.bouncycastle.cert.jcajce.JcaCertStore;
+import org.bouncycastle.cert.jcajce.JcaX509CertificateHolder;
+import org.bouncycastle.cms.CMSAbsentContent;
+import org.bouncycastle.cms.CMSSignedData;
+import org.bouncycastle.cms.CMSSignedDataGenerator;
+import org.bouncycastle.cms.DefaultSignedAttributeTableGenerator;
+import org.bouncycastle.cms.SignerInfoGeneratorBuilder;
+import org.bouncycastle.crypto.util.PrivateKeyFactory;
+import org.bouncycastle.operator.DefaultDigestAlgorithmIdentifierFinder;
+import org.bouncycastle.operator.DefaultSignatureAlgorithmIdentifierFinder;
+import org.bouncycastle.operator.bc.BcDigestCalculatorProvider;
+import org.bouncycastle.operator.bc.BcRSAContentSignerBuilder;
 
 /**
  * This is a second example for visual signing a pdf. It doesn't use the "design pattern" influenced
@@ -77,11 +103,16 @@ import org.bouncycastle.asn1.x500.style.IETFUtils;
  * @author Vakhtang Koroghlishvili
  * @author Tilman Hausherr
  */
-public class CreateVisibleSignature2Way extends CreateSignatureBase
+public class CreateVisibleSignature2Pass extends CreateSignatureBase
 {
     private SignatureOptions signatureOptions;
     private boolean lateExternalSigning = false;
+    private boolean makingPunchhole = false;
+    private boolean insertingSignature = false;
     private File imageFile = null;
+
+    private KeyStore keystore = null;
+    private char[] pin = null;
 
     /**
      * Initialize the signature creator with a keystore (pkcs12) and pin that
@@ -95,10 +126,12 @@ public class CreateVisibleSignature2Way extends CreateSignatureBase
      * @throws CertificateException if the certificate is not valid as signing time
      * @throws IOException if no certificate could be found
      */
-    public CreateVisibleSignature2(KeyStore keystore, char[] pin)
+    public CreateVisibleSignature2Pass(KeyStore keystore, char[] pin)
             throws KeyStoreException, UnrecoverableKeyException, NoSuchAlgorithmException, IOException, CertificateException
     {
         super(keystore, pin);
+        this.keystore = keystore;
+        this.pin = pin;
     }
 
     public File getImageFile()
@@ -127,6 +160,26 @@ public class CreateVisibleSignature2Way extends CreateSignatureBase
     {
         this.lateExternalSigning = lateExternalSigning;
     }
+
+    // public InputStream getDataToSign() throws IOException
+    // {
+    //     if (incrementPart == null || incrementalInput == null)
+    //     {
+    //         throw new IllegalStateException("PDF not prepared for signing");
+    //     }
+    //     // range of incremental bytes to be signed (includes /ByteRange but not /Contents)
+    //     int incPartSigOffset = (int) (signatureOffset - incrementalInput.length());
+    //     int afterSigOffset = incPartSigOffset + (int) signatureLength;
+    //     int[] range =
+    //     {
+    //         0, incPartSigOffset,
+    //         afterSigOffset, incrementPart.length - afterSigOffset
+    //     };
+
+    //     return new SequenceInputStream(
+    //             new RandomAccessInputStream(incrementalInput),
+    //             new COSFilterInputStream(incrementPart, range));
+    // }
 
     /**
      * Sign pdf file and create new file that ends with "_signed.pdf".
@@ -176,120 +229,206 @@ public class CreateVisibleSignature2Way extends CreateSignatureBase
             // be careful with such files.
 
             PDSignature signature = null;
-            PDAcroForm acroForm = doc.getDocumentCatalog().getAcroForm(null);
-            PDRectangle rect = null;
 
-            // sign a PDF with an existing empty signature, as created by the CreateEmptySignatureForm example.
-            if (acroForm != null)
-            {
-                signature = findExistingSignature(acroForm, signatureFieldName);
-                if (signature != null)
+            if(isInsertingSignature()) {
+                signature = doc.getLastSignatureDictionary();
+
+                // ExternalSigningSupport externalSigning = doc.saveIncrementalForExternalSigning(fos);
+                // // invoke external signature service
+                File contentOnlyFile = new File(inputFile.getParent(), "contentonly.pdf");
+                System.err.println("calc hash:");
+                byte[] hash = null;
                 {
-                    rect = acroForm.getField(signatureFieldName).getWidgets().get(0).getRectangle();
+                    // hash
+                    hash = calcHashFromContent(new FileInputStream(contentOnlyFile));
+                    // System.err.println(Hex.getBytes(hash));
                 }
-            }
 
-            if (signature == null)
-            {
-                // create signature dictionary
-                signature = new PDSignature();
-            }
+                FileInputStream contentOnlyFileStream = new FileInputStream(contentOnlyFile);
+                byte[] cmsSignature = sign(contentOnlyFileStream);
 
-            if (rect == null)
-            {
-                rect = createSignatureRectangle(doc, humanRect);
-            }
+                // remember the offset (add 1 because of "<")
+                int offset = signature.getByteRange()[0] + signature.getByteRange()[1] + 1;
 
-            // Optional: certify
-            // can be done only if version is at least 1.5 and if not already set
-            // doing this on a PDF/A-1b file fails validation by Adobe preflight (PDFBOX-3821)
-            // PDF/A-1b requires PDF version 1.4 max, so don't increase the version on such files.
-            if (doc.getVersion() >= 1.5f && accessPermissions == 0)
-            {
-                SigUtils.setMDPPermission(doc, signature, 2);
-            }
+                // Assure cmsSignature size is less than range.
+                int range = (signature.getByteRange()[2] - 1) - offset;
 
-            if (acroForm != null && acroForm.getNeedAppearances())
-            {
-                // PDFBOX-3738 NeedAppearances true results in visible signature becoming invisible 
-                // with Adobe Reader
-                if (acroForm.getFields().isEmpty())
+                // copy file contents
                 {
-                    // we can safely delete it if there are no fields
-                    acroForm.getCOSObject().removeItem(COSName.NEED_APPEARANCES);
-                    // note that if you've set MDP permissions, the removal of this item
-                    // may result in Adobe Reader claiming that the document has been changed.
-                    // and/or that field content won't be displayed properly.
-                    // ==> decide what you prefer and adjust your code accordingly.
+                    FileOutputStream newFile = new FileOutputStream(signedFile);
+                    FileInputStream oldFile = new FileInputStream(inputFile);
+                    oldFile.transferTo(newFile);
+                    newFile.close();
+                    oldFile.close();
                 }
-                else
-                {
-                    System.out.println("/NeedAppearances is set, signature may be ignored by Adobe Reader");
+
+                if(Hex.getBytes(cmsSignature).length > range) {
+                    throw new IOException("Can't write signature, not enough space");
                 }
-            }
 
-            // default filter
-            signature.setFilter(PDSignature.FILTER_ADOBE_PPKLITE);
-
-            // subfilter for basic and PAdES Part 2 signatures
-            signature.setSubFilter(PDSignature.SUBFILTER_ADBE_PKCS7_DETACHED);
-
-            signature.setName("Name");
-            signature.setLocation("Location");
-            signature.setReason("Reason");
-
-            // the signing date, needed for valid signature
-            signature.setSignDate(Calendar.getInstance());
-
-            // do not set SignatureInterface instance, if external signing used
-            SignatureInterface signatureInterface = isExternalSigning() ? null : this;
-
-            // register signature dictionary and sign interface
-            signatureOptions = new SignatureOptions();
-            signatureOptions.setVisualSignature(createVisualSignatureTemplate(doc, 0, rect, signature));
-            signatureOptions.setPage(0);
-            doc.addSignature(signature, signatureInterface, signatureOptions);
-
-            if (isExternalSigning())
-            {
-                ExternalSigningSupport externalSigning = doc.saveIncrementalForExternalSigning(fos);
-                // invoke external signature service
-                byte[] cmsSignature = sign(externalSigning.getContent());
-
-                // Explanation of late external signing (off by default):
-                // If you want to add the signature in a separate step, then set an empty byte array
-                // and call signature.getByteRange() and remember the offset signature.getByteRange()[1]+1.
-                // you can write the ascii hex signature at a later time even if you don't have this
-                // PDDocument object anymore, with classic java file random access methods.
-                // If you can't remember the offset value from ByteRange because your context has changed,
-                // then open the file with PDFBox, find the field with findExistingSignature() or
-                // PDDocument.getLastSignatureDictionary() and get the ByteRange from there.
-                // Close the file and then write the signature as explained earlier in this comment.
-                if (isLateExternalSigning())
+                // now write the signature at the correct offset without any PDFBox methods
+                try (RandomAccessFile raf = new RandomAccessFile(signedFile, "rw"))
                 {
-                    // this saves the file with a 0 signature
-                    externalSigning.setSignature(new byte[0]);
+                    raf.seek(offset);
 
-                    // remember the offset (add 1 because of "<")
-                    int offset = signature.getByteRange()[1] + 1;
-
-                    // now write the signature at the correct offset without any PDFBox methods
-                    try (RandomAccessFile raf = new RandomAccessFile(signedFile, "rw"))
-                    {
-                        raf.seek(offset);
+                    try{
+                        cmsSignature = createCMSSignatureFromHashAndKeystore(hash, this.keystore, this.pin);
+                        System.err.println("length: " + cmsSignature.length);
                         raf.write(Hex.getBytes(cmsSignature));
+                    }catch(Exception e){
+                        System.err.println("exception: " + e.getMessage());
+                        throw new IOException(e.getMessage());
+                    }
+
+                    // FileInputStream pkcs7sig = new FileInputStream(new File(inputFile.getParent(), "pkcs7_signature3.sgn"));
+                    // raf.write(Hex.getBytes(IOUtils.toByteArray(pkcs7sig)));
+                    // pkcs7sig.close();
+
+                    // System.err.println("length: " + cmsSignature.length);
+                    // System.err.println("length2: " + Hex.getBytes(cmsSignature).length);
+                    // System.err.println("last: " + cmsSignature[cmsSignature.length -7]);
+                }
+                contentOnlyFileStream.close();
+
+                // FileOutputStream cmsStream = new FileOutputStream(new File(inputFile.getParent(), "cmssignature.sgn"));
+                // cmsStream.write(cmsSignature);
+                // cmsStream.close();
+            }else{
+                PDAcroForm acroForm = doc.getDocumentCatalog().getAcroForm(null);
+                PDRectangle rect = null;
+
+                // sign a PDF with an existing empty signature, as created by the CreateEmptySignatureForm example.
+                if (acroForm != null)
+                {
+                    signature = findExistingSignature(acroForm, signatureFieldName);
+                    if (signature != null)
+                    {
+                        rect = acroForm.getField(signatureFieldName).getWidgets().get(0).getRectangle();
+                    }
+                }
+
+                if (signature == null)
+                {
+                    // create signature dictionary
+                    signature = new PDSignature();
+                }
+
+                if (rect == null)
+                {
+                    rect = createSignatureRectangle(doc, humanRect);
+                }
+
+                // Optional: certify
+                // can be done only if version is at least 1.5 and if not already set
+                // doing this on a PDF/A-1b file fails validation by Adobe preflight (PDFBOX-3821)
+                // PDF/A-1b requires PDF version 1.4 max, so don't increase the version on such files.
+                if (doc.getVersion() >= 1.5f && accessPermissions == 0)
+                {
+                    SigUtils.setMDPPermission(doc, signature, 2);
+                }
+
+                if (acroForm != null && acroForm.getNeedAppearances())
+                {
+                    // PDFBOX-3738 NeedAppearances true results in visible signature becoming invisible 
+                    // with Adobe Reader
+                    if (acroForm.getFields().isEmpty())
+                    {
+                        // we can safely delete it if there are no fields
+                        acroForm.getCOSObject().removeItem(COSName.NEED_APPEARANCES);
+                        // note that if you've set MDP permissions, the removal of this item
+                        // may result in Adobe Reader claiming that the document has been changed.
+                        // and/or that field content won't be displayed properly.
+                        // ==> decide what you prefer and adjust your code accordingly.
+                    }
+                    else
+                    {
+                        System.out.println("/NeedAppearances is set, signature may be ignored by Adobe Reader");
+                    }
+                }
+
+                // default filter
+                signature.setFilter(PDSignature.FILTER_ADOBE_PPKLITE);
+
+                // subfilter for basic and PAdES Part 2 signatures
+                signature.setSubFilter(PDSignature.SUBFILTER_ADBE_PKCS7_DETACHED);
+
+                signature.setName("Name");
+                signature.setLocation("Location");
+                signature.setReason("Reason");
+
+                // the signing date, needed for valid signature
+                signature.setSignDate(Calendar.getInstance());
+
+                // do not set SignatureInterface instance, if external signing used
+                SignatureInterface signatureInterface = isExternalSigning() ? null : this;
+
+                // register signature dictionary and sign interface
+                signatureOptions = new SignatureOptions();
+
+                // System.err.println("signatureOptions.getPreferredSignatureSize(): " + signatureOptions.getPreferredSignatureSize());
+                // 0
+
+                signatureOptions.setVisualSignature(createVisualSignatureTemplate(doc, 0, rect, signature));
+                signatureOptions.setPage(0);
+                // if(! isMakePunchhole()) {
+                    doc.addSignature(signature, signatureInterface, signatureOptions);
+                // }
+
+                // signatureOptions.DEFAULT_SIGNATURE_SIZE 9472
+
+                if (isExternalSigning())
+                {
+                    ExternalSigningSupport externalSigning = doc.saveIncrementalForExternalSigning(fos);
+                    // invoke external signature service
+
+                    InputStream content = externalSigning.getContent();
+                    File contentOnlyFile = new File(inputFile.getParent(), "contentonly.pdf");
+                    FileOutputStream contentOnlyFileStream = new FileOutputStream(contentOnlyFile);
+                    content.transferTo(contentOnlyFileStream);
+                    contentOnlyFileStream.close();
+                    
+                    // byte[] cmsSignature = sign(content);
+
+                    // Explanation of late external signing (off by default):
+                    // If you want to add the signature in a separate step, then set an empty byte array
+                    // and call signature.getByteRange() and remember the offset signature.getByteRange()[1]+1.
+                    // you can write the ascii hex signature at a later time even if you don't have this
+                    // PDDocument object anymore, with classic java file random access methods.
+                    // If you can't remember the offset value from ByteRange because your context has changed,
+                    // then open the file with PDFBox, find the field with findExistingSignature() or
+                    // PDDocument.getLastSignatureDictionary() and get the ByteRange from there.
+                    // Close the file and then write the signature as explained earlier in this comment.
+                    // if (isLateExternalSigning())
+                    if (isInsertingSignature())
+                    {
+                        // this saves the file with a 0 signature
+                        externalSigning.setSignature(new byte[0]);
+
+                        // remember the offset (add 1 because of "<")
+                        int offset = signature.getByteRange()[1] + 1;
+
+                        // now write the signature at the correct offset without any PDFBox methods
+                        try (RandomAccessFile raf = new RandomAccessFile(signedFile, "rw"))
+                        {
+                            raf.seek(offset);
+                            // raf.write(Hex.getBytes(cmsSignature));
+                        }
+                    }
+                    else
+                    {
+                        // set signature bytes received from the service and save the file
+                        // externalSigning.setSignature(cmsSignature);
+                        externalSigning.setSignature(new byte[0]);
+
+                        System.err.println("external write");
                     }
                 }
                 else
                 {
-                    // set signature bytes received from the service and save the file
-                    externalSigning.setSignature(cmsSignature);
+                    // write incremental (only for signing purpose)
+                    doc.saveIncremental(fos);
+                    System.err.println("normal");
                 }
-            }
-            else
-            {
-                // write incremental (only for signing purpose)
-                doc.saveIncremental(fos);
             }
         }
         
@@ -464,6 +603,113 @@ public class CreateVisibleSignature2Way extends CreateSignatureBase
         }
     }
 
+    public byte[] calcHashFromContent(InputStream content) throws IOException
+    {
+        // Digest generation step
+        byte[] digest = null;
+        try
+        {
+            java.security.Security.addProvider(new org.bouncycastle.jce.provider.BouncyCastleProvider());
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA256", "BC");
+            digest = md.digest(IOUtils.toByteArray(content));
+            String digestStr = new String(org.apache.commons.codec.binary.Hex.encodeHex(digest));
+            System.err.println("digest:" + digestStr);
+        } catch (Exception e) {
+            //             e.printStackTrace();
+            throw new IOException(e);
+        }
+        return digest;
+    }
+
+    public byte[] createCMSSignatureFromHashAndKeystore(byte[] hash, KeyStore keystore, char[] pin) throws Exception {
+        // Start key management
+        PrivateKey pk = null;
+
+        // grabs the first alias from the keystore and get the private key. An
+        // alternative method or constructor could be used for setting a specific
+        // alias that should be used.
+        Enumeration<String> aliases = keystore.aliases();
+        String alias;
+        Certificate cert = null;
+        CertificateFactory certFactory = CertificateFactory.getInstance("X.509");
+
+        List<Certificate> certList = null;
+        JcaCertStore certs = null;
+
+        while (cert == null && aliases.hasMoreElements())
+        {
+            alias = aliases.nextElement();
+            // setPrivateKey((PrivateKey) keystore.getKey(alias, pin));
+            pk = (PrivateKey) keystore.getKey(alias, pin);
+            Certificate[] certChain = keystore.getCertificateChain(alias);
+            if (certChain != null)
+            {
+                setCertificateChain(certChain);
+                cert = certChain[0];
+                if (cert instanceof X509Certificate)
+                {
+                    // avoid expired certificate
+                    ((X509Certificate) cert).checkValidity();
+
+                    SigUtils.checkCertificateUsage((X509Certificate) cert);
+                }
+                certList = Arrays.asList(keystore.getCertificateChain(alias));
+                certs = new JcaCertStore(certList);
+            }
+        }
+
+        if (cert == null)
+        {
+            throw new IOException("Could not find certificate");
+        }
+        // End key management
+
+
+        byte [] cms = null;
+        try
+        {
+            // Separate signature container creation step
+            // List<Certificate> certList = Arrays.asList(chain);
+            // JcaCertStore certs = new JcaCertStore(certList);
+
+            CMSSignedDataGenerator gen = new CMSSignedDataGenerator();
+
+            Attribute attr = new Attribute(CMSAttributes.messageDigest,
+                    new DERSet(new DEROctetString(hash)));
+
+            ASN1EncodableVector v = new ASN1EncodableVector();
+
+            v.add(attr);
+
+            SignerInfoGeneratorBuilder builder = new SignerInfoGeneratorBuilder(new BcDigestCalculatorProvider())
+                    .setSignedAttributeGenerator(new DefaultSignedAttributeTableGenerator(new AttributeTable(v)));
+
+            AlgorithmIdentifier sha256withRSA = new DefaultSignatureAlgorithmIdentifierFinder().find("SHA256withRSA");
+
+            // CertificateFactory certFactory = CertificateFactory.getInstance("X.509");
+            // InputStream in = new ByteArrayInputStream(chain[0].getEncoded());
+            // X509Certificate cert = (X509Certificate) certFactory.generateCertificate(in);
+
+            gen.addSignerInfoGenerator(builder.build(
+                    new BcRSAContentSignerBuilder(sha256withRSA,
+                            new DefaultDigestAlgorithmIdentifierFinder().find(sha256withRSA))
+                                    .build(PrivateKeyFactory.createKey(pk.getEncoded())),
+                    new JcaX509CertificateHolder(((X509Certificate) cert))));
+
+            gen.addCertificates(certs);
+
+            CMSSignedData s = gen.generate(new CMSAbsentContent(), false);
+            cms = s.getEncoded();
+            return cms;
+        }
+        catch (Exception e)
+        {
+            e.printStackTrace();
+            // throw new Exception(e);
+        }
+        return cms;
+    }
+
     // Find an existing signature (assumed to be empty). You will usually not need this.
     private PDSignature findExistingSignature(PDAcroForm acroForm, String sigFieldName)
     {
@@ -493,6 +739,26 @@ public class CreateVisibleSignature2Way extends CreateSignatureBase
         return signature;
     }
 
+    public void setMakingPunchhole(boolean makingPunchhole)
+    {
+        this.makingPunchhole = makingPunchhole;
+    }
+
+    public boolean isMakePunchhole()
+    {
+        return makingPunchhole;
+    }
+
+    public void setInsertingSignature(boolean insertingSignature)
+    {
+        this.insertingSignature = insertingSignature;
+    }
+
+    public boolean isInsertingSignature()
+    {
+        return insertingSignature;
+    }
+
     /**
      * Arguments are
      * [0] key store
@@ -520,6 +786,8 @@ public class CreateVisibleSignature2Way extends CreateSignatureBase
         // External signing is needed if you are using an external signing service, e.g. to sign
         // several files at once.
         boolean externalSig = false;
+        boolean makingPunchhole = false;
+        boolean insertingSignature = false;
         for (int i = 0; i < args.length; i++)
         {
             if ("-tsa".equals(args[i]))
@@ -536,6 +804,21 @@ public class CreateVisibleSignature2Way extends CreateSignatureBase
             {
                 externalSig = true;
             }
+            if ("-punch".equals(args[i]))
+            {
+                makingPunchhole = true;
+                externalSig = true;
+            }
+            if ("-insert".equals(args[i]))
+            {
+                insertingSignature = true;
+                externalSig = true;
+            }
+        }
+        if (makingPunchhole && insertingSignature)
+        {
+            usage();
+            System.exit(1);
         }
 
         File ksFile = new File(args[0]);
@@ -545,7 +828,7 @@ public class CreateVisibleSignature2Way extends CreateSignatureBase
 
         File documentFile = new File(args[2]);
 
-        CreateVisibleSignature2 signing = new CreateVisibleSignature2(keystore, pin.clone());
+        CreateVisibleSignature2Pass signing = new CreateVisibleSignature2Pass(keystore, pin.clone());
 
         if (args.length >= 4 && !"-tsa".equals(args[3]))
         {
@@ -555,9 +838,11 @@ public class CreateVisibleSignature2Way extends CreateSignatureBase
         File signedDocumentFile;
         String name = documentFile.getName();
         String substring = name.substring(0, name.lastIndexOf('.'));
-        signedDocumentFile = new File(documentFile.getParent(), substring + "_signed.pdf");
+        signedDocumentFile = new File(documentFile.getParent(), substring + "_punch.pdf");
 
         signing.setExternalSigning(externalSig);
+        signing.setMakingPunchhole(makingPunchhole);
+        signing.setInsertingSignature(insertingSignature);
 
         // Set the signature rectangle
         // Although PDF coordinates start from the bottom, humans start from the top.
@@ -574,11 +859,13 @@ public class CreateVisibleSignature2Way extends CreateSignatureBase
      */
     private static void usage()
     {
-        System.err.println("Usage: java " + CreateVisibleSignature2.class.getName()
+        System.err.println("Usage: java " + CreateVisibleSignature2Pass.class.getName()
                 + " <pkcs12-keystore-file> <pin> <input-pdf> <sign-image>\n" + "" +
                            "options:\n" +
                            "  -tsa <url>    sign timestamp using the given TSA server\n"+
-                           "  -e            sign using external signature creation scenario");
+                           "  -e            sign using external signature creation scenario\n"+
+                           "  -punch        create a punch hole for sign(1st pass) -e assumed"+
+                           "  -insert       insert signature to the punch hole(2nd pass) -e assumed");
 
         // generate pkcs12-keystore-file with
         // keytool -storepass 123456 -storetype PKCS12 -keystore file.p12 -genkey -alias client -keyalg RSA
