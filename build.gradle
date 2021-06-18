@@ -8,16 +8,31 @@ plugins {
 group = 'com.example'
 version = '0.0.1-SNAPSHOT'
 sourceCompatibility = '11'
-mainClassName = 'com.example.demo.DemoApplication'
+// mainClassName = 'org.apache.pdfbox.examples.signature.CreateSignature'
+// mainClassName = 'org.apache.pdfbox.examples.signature.CreateVisibleSignature'
+// mainClassName = 'org.apache.pdfbox.examples.signature.CreateVisibleSignature2'
+mainClassName = 'org.apache.pdfbox.examples.signature.CreateVisibleSignature2Pass'
+// mainClassName = 'org.apache.pdfbox.examples.signature.ShowSignature'
+// mainClassName = 'org.apache.pdfbox.examples.signature.ShowSignature'
 
 repositories {
 	mavenCentral()
 }
 
 dependencies {
-	implementation 'org.springframework.boot:spring-boot-starter'
-	testImplementation 'org.springframework.boot:spring-boot-starter-test'
-	implementation group: 'org.apache.pdfbox', name: 'pdfbox', version: '2.0.23'
+	implementation 'org.springframework.boot:spring-boot-starter-test'
+	implementation group: 'org.apache.pdfbox', name: 'pdfbox', version: '3.0.0-RC1'
+	implementation group: 'org.apache.pdfbox', name: 'pdfbox-tools', version: '3.0.0-RC1'
+	implementation group: 'org.apache.pdfbox', name: 'pdfbox-parent', version: '3.0.0-RC1'
+	// implementation group: 'org.apache.pdfbox', name: 'pdfbox-examples', version: '2.0.23'
+	implementation group: 'org.bouncycastle', name: 'bcmail-jdk15on', version: '1.69'
+	implementation group: 'commons-codec', name:'commons-codec', version: '1.15'
+	// implementation group: 'org.apache.pdfbox', name: 'pdfbox', version: {branch = "2.0"}
+	// implementation('org.apache.pdfbox:pdfbox'){
+	// 	version {
+	// 		branch = '2.0'
+	// 	}
+	// }
 }
 
 test {
