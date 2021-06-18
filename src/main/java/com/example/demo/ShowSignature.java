@@ -555,6 +555,7 @@ public final class ShowSignature
         {
             System.out.println("Signature verification failed");
         }
+        System.err.println("signerInformation.getContentDigest(): " + org.apache.commons.codec.binary.Hex.encodeHex(signerInformation.getContentDigest()));
 
         if (CertificateVerifier.isSelfSigned(certFromSignedData))
         {
