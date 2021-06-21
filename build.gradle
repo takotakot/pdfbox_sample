@@ -8,7 +8,9 @@ plugins {
 group = 'com.example'
 version = '0.0.1-SNAPSHOT'
 sourceCompatibility = '11'
-mainClassName = 'com.example.demo.DemoApplication'
+// mainClassName = 'com.example.demo.DemoApplication'
+mainClassName = 'com.example.demo.CreateVisibleSignature2Pass'
+
 
 repositories {
 	mavenCentral()
@@ -17,7 +19,9 @@ repositories {
 dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter'
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
-	implementation group: 'org.apache.pdfbox', name: 'pdfbox', version: '2.0.23'
+	implementation group: 'org.apache.pdfbox', name: 'pdfbox', version: '3.0.0-RC1'
+	implementation group: 'org.bouncycastle', name: 'bcmail-jdk15on', version: '1.69'
+	implementation group: 'commons-codec', name:'commons-codec', version: '1.15'
 }
 
 test {
